@@ -1,1044 +1,1067 @@
-// Data absensi disimpan di localStorage
-let dataAbsensi = JSON.parse(localStorage.getItem('dataAbsensi')) || [];
+// ===== GLOBAL VARIABLES =====
+let mediaStream = null;
+let dataAbsensi = [];
+let isFormActive = false;
+let hapusId = null;
+let kameraDiaktifkan = false;
+let watchId = null; // Untuk GPS continuous tracking
 
-// Status absen yang dipilih
-let jenisAbsenDipilih = '';
-let absenHariIni = {};
+// Daftar karyawan tetap
+const daftarKaryawan = [
+    "Ahmad Fauzi",
+    "Budi Santoso",
+    "Citra Dewi",
+    "Dodi Prasetyo",
+    "Eka Putri",
+    "Fajar Hidayat",
+    "Gita Permata",
+    "Hendra Wijaya",
+    "Indah Sari",
+    "Joko Susilo"
+];
 
-// Variabel untuk kamera
-let videoStream = null;
-let fotoDiambil = false;
+// ===== INISIALISASI =====
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('Aplikasi Absensi CIO siap!');
+    loadDataFromStorage();
+    setWaktuRealTime();
+    setInterval(setWaktuRealTime, 1000);
+});
 
-// Variabel untuk lokasi
-let lokasiUser = {
-    latitude: null,
-    longitude: null,
-    alamat: ''
-};
-
-// Konstanta jam istirahat
-const JAM_ISTIRAHAT_MULAI = '12:00';
-const JAM_ISTIRAHAT_SELESAI = '13:00';
-
-// API untuk OpenStreetMap
-const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/reverse?format=json&lat=';
-
-// ==================== FUNGSI DASAR ====================
-
-function getTanggalHariIni() {
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const day = String(today.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
+// ===== HANDLE MENU =====
+function handleAbsen() {
+    resetFormAbsen();
+    isFormActive = false;
+    kameraDiaktifkan = false;
+    
+    const modal = new bootstrap.Modal(document.getElementById('absenModal'));
+    modal.show();
+    
+    setWaktuRealTime();
+    updateStatusAbsen();
+    validasiDataDiri(); // Cek status tombol
 }
 
-function getWaktuSekarang() {
-    const now = new Date();
-    const hours = String(now.getHours()).padStart(2, '0');
-    const minutes = String(now.getMinutes()).padStart(2, '0');
-    return `${hours}:${minutes}`;
+function handleRekap() {
+    refreshRekap();
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('filterTanggal').value = today;
+    document.getElementById('filterDivisi').value = '';
+    document.getElementById('filterStatus').value = '';
+    document.getElementById('filterNama').value = '';
+    
+    const modal = new bootstrap.Modal(document.getElementById('rekapModal'));
+    modal.show();
 }
-
-function bandingkanWaktu(waktu1, waktu2) {
-    return waktu1.localeCompare(waktu2);
-}
-
-function cekDalamRentangIstirahat(waktu) {
-    return waktu >= JAM_ISTIRAHAT_MULAI && waktu <= JAM_ISTIRAHAT_SELESAI;
-}
-
-// ==================== FUNGSI MODAL ====================
 
 function closeModal(modalId) {
-    const modal = document.getElementById(modalId);
-    if (modal) {
-        // Gunakan Bootstrap modal jika ada
-        const bsModal = bootstrap.Modal.getInstance(modal);
-        if (bsModal) {
-            bsModal.hide();
+    const modal = bootstrap.Modal.getInstance(document.getElementById(modalId));
+    if (modal) modal.hide();
+    
+    if (modalId === 'absenModal') {
+        matikanKamera();
+        stopWatchPosition();
+        isFormActive = false;
+        kameraDiaktifkan = false;
+    }
+}
+
+function tutupModalAbsen() {
+    const modal = bootstrap.Modal.getInstance(document.getElementById('absenModal'));
+    if (modal) modal.hide();
+    matikanKamera();
+    stopWatchPosition();
+    isFormActive = false;
+    kameraDiaktifkan = false;
+}
+
+// ===== FUNGSI DROPDOWN NAMA =====
+function pilihKaryawan() {
+    const selectedValue = document.getElementById('nama').value;
+    const namaManualGroup = document.getElementById('namaManualGroup');
+    
+    if (selectedValue === 'Lainnya') {
+        namaManualGroup.style.display = 'block';
+        document.getElementById('namaManual').value = '';
+    } else {
+        namaManualGroup.style.display = 'none';
+    }
+    
+    validasiDataDiri();
+    updateStatusAbsen();
+}
+
+function getNamaTerpilih() {
+    const selectedValue = document.getElementById('nama').value;
+    
+    if (selectedValue === 'Lainnya') {
+        return document.getElementById('namaManual').value.trim();
+    } else {
+        return selectedValue;
+    }
+}
+
+// ===== VALIDASI DATA DIRI =====
+function validasiDataDiri() {
+    const nama = getNamaTerpilih();
+    const divisi = document.getElementById('divisi').value;
+    
+    const btnJamMasuk = document.getElementById('btnJamMasuk');
+    const btnJamPulang = document.getElementById('btnJamPulang');
+    
+    if (nama && divisi) {
+        btnJamMasuk.disabled = false;
+        btnJamPulang.disabled = false;
+        updateStatusAbsen(); // Update status untuk karyawan ini
+    } else {
+        btnJamMasuk.disabled = true;
+        btnJamPulang.disabled = true;
+    }
+}
+
+// ===== WAKTU =====
+function setWaktuRealTime() {
+    const now = new Date();
+    const jam = String(now.getHours()).padStart(2, '0');
+    const menit = String(now.getMinutes()).padStart(2, '0');
+    const waktu = `${jam}:${menit}`;
+    
+    const tahun = now.getFullYear();
+    const bulan = String(now.getMonth() + 1).padStart(2, '0');
+    const tanggal = String(now.getDate()).padStart(2, '0');
+    const tanggalFormatted = `${tahun}-${bulan}-${tanggal}`;
+    
+    const waktuInput = document.getElementById('waktu');
+    const tanggalInput = document.getElementById('tanggal');
+    
+    if (waktuInput) waktuInput.value = waktu;
+    if (tanggalInput) tanggalInput.value = tanggalFormatted;
+}
+
+// ===== STATUS KEHADIRAN =====
+function ubahStatusKehadiran() {
+    const status = document.getElementById('statusKehadiran').value;
+    const keteranganGroup = document.getElementById('keteranganGroup');
+    
+    if (status === 'izin' || status === 'sakit' || status === 'alpha') {
+        keteranganGroup.style.display = 'block';
+    } else {
+        keteranganGroup.style.display = 'none';
+    }
+}
+
+// ===== STATUS ABSEN =====
+function updateStatusAbsen() {
+    const statusContainer = document.getElementById('statusAbsen');
+    if (!statusContainer) return;
+    
+    const today = new Date().toISOString().split('T')[0];
+    const nama = getNamaTerpilih();
+    
+    if (!nama) {
+        statusContainer.innerHTML = '<div class="text-muted"><i class="bi bi-info-circle"></i> Pilih nama untuk melihat status</div>';
+        return;
+    }
+    
+    const absenHariIni = dataAbsensi.filter(item => item.tanggal === today && item.nama === nama);
+    
+    const jamMasuk = absenHariIni.find(item => item.jenis === 'masuk');
+    const jamPulang = absenHariIni.find(item => item.jenis === 'pulang');
+    
+    let statusHTML = '<div class="status-item-sederhana">';
+    statusHTML += '<span class="status-label"><i class="bi bi-clock"></i> Jam Masuk:</span>';
+    statusHTML += `<span class="status-value ${jamMasuk ? 'selesai' : ''}"> ${jamMasuk ? jamMasuk.waktu : 'Belum'}</span>`;
+    statusHTML += '</div>';
+    
+    statusHTML += '<div class="status-item-sederhana">';
+    statusHTML += '<span class="status-label"><i class="bi bi-house-door"></i> Jam Pulang:</span>';
+    statusHTML += `<span class="status-value ${jamPulang ? 'selesai' : ''}"> ${jamPulang ? jamPulang.waktu : 'Belum'}</span>`;
+    statusHTML += '</div>';
+    
+    statusContainer.innerHTML = statusHTML;
+    
+    // Update tombol
+    const btnJamMasuk = document.getElementById('btnJamMasuk');
+    const btnJamPulang = document.getElementById('btnJamPulang');
+    
+    if (btnJamMasuk) {
+        btnJamMasuk.disabled = !!jamMasuk || !nama;
+        btnJamMasuk.classList.toggle('selesai', !!jamMasuk);
+        btnJamMasuk.innerHTML = jamMasuk ? 
+            '<i class="bi bi-check-circle"></i> Jam Masuk (Selesai)' : 
+            '<i class="bi bi-clock"></i> Jam Masuk';
+    }
+    
+    if (btnJamPulang) {
+        btnJamPulang.disabled = !!jamPulang || !nama;
+        btnJamPulang.classList.toggle('selesai', !!jamPulang);
+        btnJamPulang.innerHTML = jamPulang ? 
+            '<i class="bi bi-check-circle"></i> Jam Pulang (Selesai)' : 
+            '<i class="bi bi-house-door"></i> Jam Pulang';
+    }
+    
+    const semuaSelesai = jamMasuk && jamPulang;
+    if (semuaSelesai) {
+        document.getElementById('jenisAbsenContainer').style.display = 'none';
+        document.getElementById('pesanSelesai').style.display = 'block';
+    } else {
+        document.getElementById('jenisAbsenContainer').style.display = 'flex';
+        document.getElementById('pesanSelesai').style.display = 'none';
+    }
+}
+
+// ===== PILIH JENIS =====
+function pilihJamMasuk() {
+    const nama = getNamaTerpilih();
+    const divisi = document.getElementById('divisi').value;
+    
+    if (!nama || !divisi) {
+        alert('Pilih nama dan divisi terlebih dahulu!');
+        return;
+    }
+    
+    document.getElementById('jenisAbsen').value = 'masuk';
+    document.getElementById('labelWaktu').innerHTML = 'Waktu Masuk:';
+    document.getElementById('formAbsenContainer').style.display = 'block';
+    
+    // Isi field readonly
+    document.getElementById('namaTerpilih').value = nama;
+    document.getElementById('divisiTerpilih').value = divisi;
+    
+    // Aktifkan kamera dan deteksi lokasi
+    if (!kameraDiaktifkan) {
+        inisialisasiKamera();
+        kameraDiaktifkan = true;
+    }
+    deteksiLokasi();
+    startWatchPosition();
+    
+    isFormActive = true;
+    
+    setTimeout(() => {
+        document.getElementById('formAbsenContainer').scrollIntoView({ 
+            behavior: 'smooth', 
+            block: 'center' 
+        });
+    }, 100);
+}
+
+function pilihJamPulang() {
+    const nama = getNamaTerpilih();
+    const divisi = document.getElementById('divisi').value;
+    
+    if (!nama || !divisi) {
+        alert('Pilih nama dan divisi terlebih dahulu!');
+        return;
+    }
+    
+    document.getElementById('jenisAbsen').value = 'pulang';
+    document.getElementById('labelWaktu').innerHTML = 'Waktu Pulang:';
+    document.getElementById('formAbsenContainer').style.display = 'block';
+    
+    // Isi field readonly
+    document.getElementById('namaTerpilih').value = nama;
+    document.getElementById('divisiTerpilih').value = divisi;
+    
+    // Aktifkan kamera dan deteksi lokasi
+    if (!kameraDiaktifkan) {
+        inisialisasiKamera();
+        kameraDiaktifkan = true;
+    }
+    deteksiLokasi();
+    startWatchPosition();
+    
+    isFormActive = true;
+    
+    setTimeout(() => {
+        document.getElementById('formAbsenContainer').scrollIntoView({ 
+            behavior: 'smooth', 
+            block: 'center' 
+        });
+    }, 100);
+}
+
+function batalPilihJenis() {
+    document.getElementById('formAbsenContainer').style.display = 'none';
+    document.getElementById('fotoData').value = '';
+    document.getElementById('latitude').value = '';
+    document.getElementById('longitude').value = '';
+    document.getElementById('lokasiTempat').value = '';
+    document.getElementById('statusKehadiran').value = 'hadir';
+    document.getElementById('keteranganGroup').style.display = 'none';
+    document.getElementById('keterangan').value = '';
+    
+    document.getElementById('fotoPreview').style.display = 'none';
+    document.getElementById('btnAmbilFoto').style.display = 'block';
+    document.getElementById('btnUlangFoto').style.display = 'none';
+    
+    matikanKamera();
+    stopWatchPosition();
+    kameraDiaktifkan = false;
+    isFormActive = false;
+    
+    // Reset tampilan lokasi
+    document.getElementById('loadingLokasi').innerHTML = '<i class="bi bi-geo-alt-fill text-primary"></i> Mendeteksi lokasi...';
+    document.getElementById('alamatLengkap').innerHTML = '';
+    document.getElementById('koordinat').innerHTML = '';
+}
+
+function resetFormAbsen() {
+    document.getElementById('formAbsenContainer').style.display = 'none';
+    document.getElementById('absenForm').reset();
+    document.getElementById('jenisAbsen').value = '';
+    document.getElementById('fotoData').value = '';
+    document.getElementById('latitude').value = '';
+    document.getElementById('longitude').value = '';
+    document.getElementById('lokasiTempat').value = '';
+    document.getElementById('statusKehadiran').value = 'hadir';
+    document.getElementById('keteranganGroup').style.display = 'none';
+    document.getElementById('keterangan').value = '';
+    
+    document.getElementById('fotoPreview').style.display = 'none';
+    document.getElementById('btnAmbilFoto').style.display = 'block';
+    document.getElementById('btnUlangFoto').style.display = 'none';
+    
+    matikanKamera();
+    stopWatchPosition();
+    kameraDiaktifkan = false;
+}
+
+// ===== LOKASI GPS - ENHANCED =====
+function deteksiLokasi() {
+    if (!navigator.geolocation) {
+        document.getElementById('loadingLokasi').innerHTML = '<i class="bi bi-exclamation-triangle-fill text-danger"></i> Geolokasi tidak didukung browser ini';
+        return;
+    }
+    
+    updateStatusLokasi('Mendeteksi lokasi...', 'text-primary', 'bi-geo-alt-fill');
+    
+    const options = {
+        enableHighAccuracy: true,
+        timeout: 30000,
+        maximumAge: 0
+    };
+    
+    navigator.geolocation.getCurrentPosition(
+        positionSuccess,
+        positionError,
+        options
+    );
+}
+
+function positionSuccess(position) {
+    const lat = position.coords.latitude;
+    const lng = position.coords.longitude;
+    const akurasi = position.coords.accuracy;
+    const kecepatan = position.coords.speed;
+    
+    document.getElementById('latitude').value = lat;
+    document.getElementById('longitude').value = lng;
+    
+    let akurasiClass = '';
+    let akurasiText = '';
+    
+    if (akurasi < 20) {
+        akurasiClass = 'akurasi-tinggi';
+        akurasiText = 'Akurasi Tinggi';
+    } else if (akurasi < 100) {
+        akurasiClass = 'akurasi-sedang';
+        akurasiText = 'Akurasi Sedang';
+    } else {
+        akurasiClass = 'akurasi-rendah';
+        akurasiText = 'Akurasi Rendah';
+    }
+    
+    let koordinatHTML = `<i class="bi bi-crosshair"></i> Lat: ${lat.toFixed(6)}, Lng: ${lng.toFixed(6)}<br>`;
+    koordinatHTML += `<span class="${akurasiClass}"><i class="bi bi-${akurasiClass === 'akurasi-tinggi' ? 'check-circle' : (akurasiClass === 'akurasi-sedang' ? 'exclamation-circle' : 'exclamation-triangle')}"></i> ${akurasiText}: ±${akurasi.toFixed(0)} meter</span>`;
+    
+    if (kecepatan !== null && kecepatan > 0) {
+        koordinatHTML += `<br><small class="text-muted">Kecepatan: ${(kecepatan * 3.6).toFixed(1)} km/jam</small>`;
+    }
+    
+    document.getElementById('koordinat').innerHTML = koordinatHTML;
+    
+    reverseGeocodeWithFallback(lat, lng);
+}
+
+function positionError(error) {
+    let icon = 'bi-exclamation-triangle-fill';
+    let color = 'text-danger';
+    let pesan = '';
+    
+    switch(error.code) {
+        case error.PERMISSION_DENIED:
+            pesan = 'Izin lokasi ditolak. Izinkan akses lokasi di browser Anda.';
+            icon = 'bi-shield-lock-fill';
+            break;
+        case error.POSITION_UNAVAILABLE:
+            pesan = 'Lokasi tidak tersedia. Pastikan GPS aktif dan Anda di luar ruangan.';
+            icon = 'bi-satellite';
+            color = 'text-warning';
+            break;
+        case error.TIMEOUT:
+            pesan = 'Timeout mengambil lokasi. Coba lagi.';
+            icon = 'bi-hourglass-split';
+            color = 'text-warning';
+            break;
+        default:
+            pesan = 'Error tidak diketahui';
+            icon = 'bi-question-circle-fill';
+    }
+    
+    updateStatusLokasi(pesan, color, icon);
+    console.error('Geolocation error:', error);
+}
+
+function startWatchPosition() {
+    if (!navigator.geolocation) return;
+    
+    const options = {
+        enableHighAccuracy: true,
+        timeout: 30000,
+        maximumAge: 0
+    };
+    
+    watchId = navigator.geolocation.watchPosition(
+        watchSuccess,
+        watchError,
+        options
+    );
+}
+
+function watchSuccess(position) {
+    const lat = position.coords.latitude;
+    const lng = position.coords.longitude;
+    const akurasi = position.coords.accuracy;
+    
+    document.getElementById('latitude').value = lat;
+    document.getElementById('longitude').value = lng;
+    
+    let akurasiClass = akurasi < 20 ? 'akurasi-tinggi' : (akurasi < 100 ? 'akurasi-sedang' : 'akurasi-rendah');
+    
+    document.getElementById('koordinat').innerHTML = `
+        <i class="bi bi-crosshair"></i> Lat: ${lat.toFixed(6)}, Lng: ${lng.toFixed(6)}<br>
+        <span class="${akurasiClass}"><i class="bi bi-arrow-repeat"></i> Update real-time: ±${akurasi.toFixed(0)}m</span>
+    `;
+}
+
+function watchError(error) {
+    console.warn('Watch position error:', error);
+}
+
+function stopWatchPosition() {
+    if (watchId) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+    }
+}
+
+function updateStatusLokasi(pesan, colorClass, icon) {
+    document.getElementById('loadingLokasi').innerHTML = `
+        <i class="bi ${icon} ${colorClass}"></i> 
+        <span class="${colorClass}">${pesan}</span>
+    `;
+}
+
+function refreshLokasi() {
+    updateStatusLokasi('Menyegarkan lokasi...', 'text-primary', 'bi-arrow-repeat');
+    deteksiLokasi();
+}
+
+function inputLokasiManual() {
+    const alamatManual = prompt('Masukkan alamat lengkap Anda:');
+    if (alamatManual && alamatManual.trim()) {
+        document.getElementById('alamatLengkap').innerHTML = `
+            <i class="bi bi-pencil-fill text-warning"></i> 
+            <strong>${alamatManual}</strong>
+            <br><small class="text-muted">(Input manual)</small>
+        `;
+        document.getElementById('loadingLokasi').style.display = 'none';
+        
+        if (!document.getElementById('latitude').value) {
+            document.getElementById('latitude').value = 'manual';
+            document.getElementById('longitude').value = 'manual';
+        }
+    }
+}
+
+function reverseGeocodeWithFallback(lat, lng) {
+    fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&accept-language=id`, {
+        headers: {
+            'User-Agent': 'CIPTA-INFRA-OPTIMA-Absensi/1.0'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data && data.display_name) {
+            tampilkanAlamat(data);
         } else {
-            modal.style.display = 'none';
+            throw new Error('Alamat tidak ditemukan');
+        }
+    })
+    .catch(error => {
+        console.warn('Nominatim gagal, coba provider lain:', error);
+        reverseGeocodeBigDataCloud(lat, lng);
+    });
+}
+
+function tampilkanAlamat(data) {
+    document.getElementById('loadingLokasi').style.display = 'none';
+    
+    let alamat = data.display_name;
+    let detailAlamat = [];
+    
+    if (data.address) {
+        if (data.address.building) detailAlamat.push(`🏢 ${data.address.building}`);
+        if (data.address.shop) detailAlamat.push(`🏪 ${data.address.shop}`);
+        if (data.address.office) detailAlamat.push(`🏛️ ${data.address.office}`);
+        if (data.address.road) detailAlamat.push(`🛣️ ${data.address.road}`);
+        if (data.address.suburb) detailAlamat.push(`🏘️ ${data.address.suburb}`);
+        if (data.address.city || data.address.town || data.address.village) {
+            const kota = data.address.city || data.address.town || data.address.village;
+            detailAlamat.push(`🏙️ ${kota}`);
+        }
+    }
+    
+    let alamatHTML = `<i class="bi bi-pin-map-fill text-primary"></i> <strong>${alamat}</strong>`;
+    
+    if (detailAlamat.length > 0) {
+        alamatHTML += `<br><small class="text-muted">${detailAlamat.join(' • ')}</small>`;
+    }
+    
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('id-ID');
+    alamatHTML += `<br><small class="text-muted"><i class="bi bi-clock"></i> Terdeteksi: ${timeStr}</small>`;
+    
+    document.getElementById('alamatLengkap').innerHTML = alamatHTML;
+}
+
+function reverseGeocodeBigDataCloud(lat, lng) {
+    fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=id`)
+    .then(response => response.json())
+    .then(data => {
+        if (data && (data.locality || data.city || data.countryName)) {
+            document.getElementById('loadingLokasi').style.display = 'none';
+            
+            const parts = [];
+            if (data.locality) parts.push(data.locality);
+            if (data.city) parts.push(data.city);
+            if (data.principalSubdivision) parts.push(data.principalSubdivision);
+            if (data.countryName) parts.push(data.countryName);
+            
+            const alamat = parts.join(', ') || 'Alamat tidak ditemukan';
+            
+            document.getElementById('alamatLengkap').innerHTML = `
+                <i class="bi bi-pin-map-fill text-primary"></i> 
+                <strong>${alamat}</strong>
+                <br><small class="text-muted"><i class="bi bi-database"></i> Sumber: BigDataCloud</small>
+                <br><small class="text-muted"><i class="bi bi-clock"></i> ${new Date().toLocaleTimeString('id-ID')}</small>
+            `;
+        } else {
+            throw new Error('Alamat tidak ditemukan');
+        }
+    })
+    .catch(error => {
+        console.warn('BigDataCloud gagal:', error);
+        
+        document.getElementById('loadingLokasi').style.display = 'none';
+        document.getElementById('alamatLengkap').innerHTML = `
+            <i class="bi bi-info-circle-fill text-warning"></i> 
+            Alamat tidak dapat diambil, tapi koordinat tersedia.
+            <br><small class="text-muted">Gunakan koordinat untuk verifikasi lokasi.</small>
+        `;
+    });
+}
+
+// ===== KAMERA =====
+async function inisialisasiKamera() {
+    try {
+        if (mediaStream) {
+            matikanKamera();
         }
         
-        if (modalId === 'absenModal') {
-            hentikanKamera();
-        }
-    }
-}
-
-function showModal(modalId) {
-    const modal = document.getElementById(modalId);
-    if (modal) {
-        const bsModal = new bootstrap.Modal(modal);
-        bsModal.show();
-    }
-}
-
-// ==================== FUNGSI KAMERA ====================
-
-async function mulaiKamera() {
-    try {
-        videoStream = await navigator.mediaDevices.getUserMedia({ 
+        mediaStream = await navigator.mediaDevices.getUserMedia({ 
             video: { 
+                facingMode: 'user',
                 width: { ideal: 640 },
-                height: { ideal: 480 },
-                facingMode: 'user'
+                height: { ideal: 480 }
             }, 
             audio: false 
         });
+        
         const video = document.getElementById('video');
-        video.srcObject = videoStream;
+        video.srcObject = mediaStream;
+        video.style.display = 'block';
         
         document.getElementById('fotoPreview').style.display = 'none';
-        document.getElementById('video').style.display = 'block';
         document.getElementById('btnAmbilFoto').style.display = 'block';
         document.getElementById('btnUlangFoto').style.display = 'none';
         
-        fotoDiambil = false;
+        console.log('Kamera aktif');
+        
     } catch (err) {
-        console.error('Error mengakses kamera:', err);
-        alert('Tidak dapat mengakses kamera. Pastikan kamera terhubung dan izinkan akses kamera.');
+        console.error('Error kamera:', err);
+        alert('Tidak dapat mengakses kamera. Pastikan kamera terhubung dan izin diberikan.');
     }
 }
 
-function hentikanKamera() {
-    if (videoStream) {
-        videoStream.getTracks().forEach(track => track.stop());
-        videoStream = null;
+function matikanKamera() {
+    if (mediaStream) {
+        mediaStream.getTracks().forEach(track => {
+            track.stop();
+        });
+        mediaStream = null;
+        console.log('Kamera dimatikan');
     }
 }
 
 function ambilFoto() {
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
-    const fotoPreview = document.getElementById('fotoPreview');
-    const fotoHasil = document.getElementById('fotoHasil');
+    const context = canvas.getContext('2d');
     
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-    
-    const context = canvas.getContext('2d');
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
     
     const fotoData = canvas.toDataURL('image/jpeg', 0.8);
     document.getElementById('fotoData').value = fotoData;
     
-    fotoHasil.src = fotoData;
-    fotoPreview.style.display = 'block';
-    video.style.display = 'none';
-    
+    document.getElementById('fotoHasil').src = fotoData;
+    document.getElementById('fotoPreview').style.display = 'block';
+    document.getElementById('video').style.display = 'none';
     document.getElementById('btnAmbilFoto').style.display = 'none';
     document.getElementById('btnUlangFoto').style.display = 'block';
-    
-    fotoDiambil = true;
-    hentikanKamera();
 }
 
 function ulangFoto() {
-    mulaiKamera();
     document.getElementById('fotoPreview').style.display = 'none';
+    document.getElementById('video').style.display = 'block';
+    document.getElementById('btnAmbilFoto').style.display = 'block';
+    document.getElementById('btnUlangFoto').style.display = 'none';
     document.getElementById('fotoData').value = '';
-    fotoDiambil = false;
 }
 
-// ==================== FUNGSI LOKASI ====================
-
-function dapatkanLokasi() {
-    const loadingLokasi = document.getElementById('loadingLokasi');
-    const alamatDiv = document.getElementById('alamatLengkap');
-    const koordinatDiv = document.getElementById('koordinat');
+// ===== SUBMIT ABSEN =====
+function submitAbsen() {
+    const nama = document.getElementById('namaTerpilih').value;
+    const divisi = document.getElementById('divisiTerpilih').value;
     
-    loadingLokasi.style.display = 'block';
-    alamatDiv.innerHTML = '';
-    koordinatDiv.innerHTML = '';
-    
-    if (!navigator.geolocation) {
-        loadingLokasi.style.display = 'none';
-        alamatDiv.innerHTML = 'Geolocation tidak didukung browser ini';
+    if (!nama || !divisi) {
+        alert('Data karyawan tidak valid!');
         return;
     }
     
-    navigator.geolocation.getCurrentPosition(
-        async (position) => {
-            lokasiUser.latitude = position.coords.latitude;
-            lokasiUser.longitude = position.coords.longitude;
-            
-            document.getElementById('latitude').value = lokasiUser.latitude;
-            document.getElementById('longitude').value = lokasiUser.longitude;
-            
-            koordinatDiv.innerHTML = `${lokasiUser.latitude.toFixed(6)}, ${lokasiUser.longitude.toFixed(6)}`;
-            
-            try {
-                const response = await fetch(`${NOMINATIM_URL}${lokasiUser.latitude}&lon=${lokasiUser.longitude}`);
-                const data = await response.json();
-                
-                if (data.display_name) {
-                    lokasiUser.alamat = data.display_name;
-                    alamatDiv.innerHTML = lokasiUser.alamat;
-                } else {
-                    alamatDiv.innerHTML = 'Alamat tidak ditemukan';
-                }
-            } catch (error) {
-                console.error('Error reverse geocoding:', error);
-                alamatDiv.innerHTML = 'Gagal mendapatkan alamat';
-            }
-            
-            loadingLokasi.style.display = 'none';
-        },
-        (error) => {
-            loadingLokasi.style.display = 'none';
-            let pesanError = '';
-            
-            switch(error.code) {
-                case error.PERMISSION_DENIED:
-                    pesanError = 'Izin lokasi ditolak. Izinkan akses lokasi untuk melanjutkan.';
-                    break;
-                case error.POSITION_UNAVAILABLE:
-                    pesanError = 'Informasi lokasi tidak tersedia.';
-                    break;
-                case error.TIMEOUT:
-                    pesanError = 'Waktu permintaan lokasi habis.';
-                    break;
-                default:
-                    pesanError = 'Terjadi kesalahan saat mendapatkan lokasi.';
-            }
-            
-            alamatDiv.innerHTML = pesanError;
-        },
-        {
-            enableHighAccuracy: true,
-            timeout: 10000,
-            maximumAge: 0
-        }
-    );
-}
-
-// ==================== FUNGSI FORM ====================
-
-function ubahJenisKaryawan() {
-    const jenisKaryawan = document.querySelector('input[name="jenisKaryawan"]:checked').value;
-    const tempatKantor = document.getElementById('tempatKantorGroup');
-    const tempatLapangan = document.getElementById('tempatLapanganGroup');
-    
-    if (jenisKaryawan === 'kantor') {
-        tempatKantor.style.display = 'block';
-        tempatLapangan.style.display = 'none';
-        document.getElementById('tempatLapangan').required = false;
-        document.getElementById('tempatKantor').required = true;
-    } else {
-        tempatKantor.style.display = 'none';
-        tempatLapangan.style.display = 'block';
-        document.getElementById('tempatKantor').required = false;
-        document.getElementById('tempatLapangan').required = true;
-    }
-}
-
-// ==================== FUNGSI STATUS ====================
-
-function cekStatusAbsenHariIni() {
-    const tanggalHariIni = getTanggalHariIni();
-    const namaTersimpan = localStorage.getItem('namaUser') || '';
-    
-    const absenHariIniFilter = dataAbsensi.filter(item => item.tanggal === tanggalHariIni);
-    
-    absenHariIni = {
-        jamMasuk: null,
-        jamIstirahat: null,
-        jamPulang: null,
-        nama: namaTersimpan || ''
-    };
-    
-    if (namaTersimpan) {
-        const absenUser = absenHariIniFilter.filter(item => item.nama === namaTersimpan);
-        absenUser.forEach(item => {
-            if (item.jenis === 'Jam Masuk') absenHariIni.jamMasuk = item.waktu;
-            if (item.jenis === 'Jam Istirahat') absenHariIni.jamIstirahat = item.waktu;
-            if (item.jenis === 'Jam Pulang') absenHariIni.jamPulang = item.waktu;
-        });
-    }
-    
-    return absenHariIni;
-}
-
-function updateStatusDisplay() {
-    const status = cekStatusAbsenHariIni();
-    const statusContainer = document.getElementById('statusAbsen');
-    
-    if (!statusContainer) return;
-    
-    let html = `
-        <h5 class="mb-3">Status Absensi Hari Ini (${getTanggalHariIni()})</h5>
-        <div class="d-flex flex-wrap gap-3 justify-content-center">
-    `;
-    
-    // Status Jam Masuk
-    if (status.jamMasuk) {
-        html += `
-            <div class="status-badge selesai">
-                <i class="bi bi-check-circle"></i>
-                <span>Jam Masuk</span>
-                <span class="badge bg-light text-dark">${status.jamMasuk}</span>
-            </div>
-        `;
-    } else {
-        html += `
-            <div class="status-badge belum">
-                <i class="bi bi-hourglass-split"></i>
-                <span>Jam Masuk</span>
-                <span class="badge bg-secondary">Belum</span>
-            </div>
-        `;
-    }
-    
-    // Status Jam Istirahat
-    if (status.jamIstirahat) {
-        html += `
-            <div class="status-badge selesai">
-                <i class="bi bi-check-circle"></i>
-                <span>Jam Istirahat</span>
-                <span class="badge bg-light text-dark">${status.jamIstirahat}</span>
-            </div>
-        `;
-    } else {
-        html += `
-            <div class="status-badge belum">
-                <i class="bi bi-hourglass-split"></i>
-                <span>Jam Istirahat</span>
-                <span class="badge bg-secondary">Belum</span>
-                <small class="text-muted">(12:00-13:00)</small>
-            </div>
-        `;
-    }
-    
-    // Status Jam Pulang
-    if (status.jamPulang) {
-        html += `
-            <div class="status-badge selesai">
-                <i class="bi bi-check-circle"></i>
-                <span>Jam Pulang</span>
-                <span class="badge bg-light text-dark">${status.jamPulang}</span>
-            </div>
-        `;
-    } else {
-        html += `
-            <div class="status-badge belum">
-                <i class="bi bi-hourglass-split"></i>
-                <span>Jam Pulang</span>
-                <span class="badge bg-secondary">Belum</span>
-            </div>
-        `;
-    }
-    
-    html += '</div>';
-    statusContainer.innerHTML = html;
-    
-    updateTombolStatus();
-}
-
-function updateTombolStatus() {
-    const status = cekStatusAbsenHariIni();
-    const btnJamMasuk = document.getElementById('btnJamMasuk');
-    const btnJamIstirahat = document.getElementById('btnJamIstirahat');
-    const btnJamPulang = document.getElementById('btnJamPulang');
-    const jenisContainer = document.getElementById('jenisAbsenContainer');
-    const pesanSelesai = document.getElementById('pesanSelesai');
-    const infoIstirahat = document.getElementById('infoJamIstirahat');
-    
-    if (!btnJamMasuk || !btnJamIstirahat || !btnJamPulang) return;
-    
-    btnJamMasuk.disabled = false;
-    btnJamIstirahat.disabled = false;
-    btnJamPulang.disabled = false;
-    btnJamMasuk.classList.remove('aktif');
-    btnJamIstirahat.classList.remove('aktif');
-    btnJamPulang.classList.remove('aktif');
-    
-    if (infoIstirahat) infoIstirahat.style.display = 'none';
-    
-    if (!status.jamMasuk) {
-        btnJamIstirahat.disabled = true;
-        btnJamPulang.disabled = true;
-        btnJamMasuk.classList.add('aktif');
-    } else if (!status.jamIstirahat) {
-        btnJamMasuk.disabled = true;
-        btnJamPulang.disabled = true;
-        btnJamIstirahat.classList.add('aktif');
-        
-        if (infoIstirahat) infoIstirahat.style.display = 'flex';
-    } else if (!status.jamPulang) {
-        btnJamMasuk.disabled = true;
-        btnJamIstirahat.disabled = true;
-        btnJamPulang.classList.add('aktif');
-    } else {
-        btnJamMasuk.disabled = true;
-        btnJamIstirahat.disabled = true;
-        btnJamPulang.disabled = true;
-        
-        if (jenisContainer) jenisContainer.style.display = 'none';
-        if (pesanSelesai) pesanSelesai.style.display = 'block';
-    }
-}
-
-// ==================== FUNGSI ABSENSI ====================
-
-function handleAbsen() {
-    const formContainer = document.getElementById('formAbsenContainer');
-    const pesanSelesai = document.getElementById('pesanSelesai');
-    const jenisContainer = document.getElementById('jenisAbsenContainer');
-    const infoIstirahat = document.getElementById('infoJamIstirahat');
-    
-    if (formContainer) formContainer.style.display = 'none';
-    if (pesanSelesai) pesanSelesai.style.display = 'none';
-    if (jenisContainer) jenisContainer.style.display = 'flex';
-    if (infoIstirahat) infoIstirahat.style.display = 'none';
-    
-    document.getElementById('absenForm').reset();
-    document.getElementById('fotoData').value = '';
-    document.getElementById('latitude').value = '';
-    document.getElementById('longitude').value = '';
-    
-    hentikanKamera();
-    fotoDiambil = false;
-    
-    updateStatusDisplay();
-    showModal('absenModal');
-}
-
-function pilihJamMasuk() {
-    jenisAbsenDipilih = 'Jam Masuk';
-    tampilkanFormAbsen('Jam Masuk', 'Jam Masuk:');
-}
-
-function pilihJamIstirahat() {
-    const waktuSekarang = getWaktuSekarang();
-    
-    if (!cekDalamRentangIstirahat(waktuSekarang)) {
-        alert(`Maaf, absen jam istirahat hanya bisa dilakukan pada pukul ${JAM_ISTIRAHAT_MULAI} - ${JAM_ISTIRAHAT_SELESAI} WIB.\nSekarang pukul ${waktuSekarang}`);
+    if (!document.getElementById('lokasiTempat').value.trim()) {
+        alert('Masukkan lokasi tempat Anda saat ini!');
         return;
     }
     
-    jenisAbsenDipilih = 'Jam Istirahat';
-    tampilkanFormAbsen('Jam Istirahat', 'Jam Istirahat:');
-}
-
-function pilihJamPulang() {
-    jenisAbsenDipilih = 'Jam Pulang';
-    tampilkanFormAbsen('Jam Pulang', 'Jam Pulang:');
-}
-
-function tampilkanFormAbsen(jenis, label) {
-    const status = cekStatusAbsenHariIni();
-    const waktuSekarang = getWaktuSekarang();
-    
-    if (jenis === 'Jam Masuk' && status.jamMasuk) {
-        alert('Anda sudah melakukan absen Jam Masuk hari ini!');
-        return;
-    }
-    if (jenis === 'Jam Istirahat' && !status.jamMasuk) {
-        alert('Anda harus melakukan absen Jam Masuk terlebih dahulu!');
-        return;
-    }
-    if (jenis === 'Jam Istirahat' && status.jamIstirahat) {
-        alert('Anda sudah melakukan absen Jam Istirahat hari ini!');
-        return;
-    }
-    if (jenis === 'Jam Pulang' && !status.jamIstirahat) {
-        alert('Anda harus melakukan absen Jam Istirahat terlebih dahulu!');
-        return;
-    }
-    if (jenis === 'Jam Pulang' && status.jamPulang) {
-        alert('Anda sudah melakukan absen Jam Pulang hari ini!');
+    if (!document.getElementById('fotoData').value) {
+        alert('Ambil foto terlebih dahulu!');
         return;
     }
     
-    if (jenis === 'Jam Pulang' && bandingkanWaktu(waktuSekarang, JAM_ISTIRAHAT_SELESAI) < 0) {
-        alert(`Maaf, absen jam pulang baru bisa dilakukan setelah jam istirahat selesai (setelah ${JAM_ISTIRAHAT_SELESAI} WIB)`);
+    if (!document.getElementById('latitude').value) {
+        alert('Lokasi GPS belum terdeteksi. Tunggu sebentar atau gunakan input manual.');
         return;
     }
     
-    document.getElementById('jenisAbsen').value = jenis;
-    document.getElementById('labelWaktu').textContent = label;
-    
-    if (status.nama) {
-        document.getElementById('nama').value = status.nama;
-        document.getElementById('nama').readOnly = true;
-    } else {
-        document.getElementById('nama').value = '';
-        document.getElementById('nama').readOnly = false;
-    }
-    
-    document.getElementById('waktu').value = waktuSekarang;
-    
-    const waktuInfo = document.getElementById('waktuInfo');
-    if (jenis === 'Jam Istirahat') {
-        waktuInfo.textContent = `* Absen istirahat hanya bisa dilakukan pukul ${JAM_ISTIRAHAT_MULAI} - ${JAM_ISTIRAHAT_SELESAI} WIB`;
-    } else {
-        waktuInfo.textContent = '';
-    }
-    
-    document.getElementById('tanggal').value = getTanggalHariIni();
-    
-    mulaiKamera();
-    dapatkanLokasi();
-    
-    document.getElementById('jenisAbsenContainer').style.display = 'none';
-    document.getElementById('formAbsenContainer').style.display = 'block';
-    
-    const infoIstirahat = document.getElementById('infoJamIstirahat');
-    if (infoIstirahat) infoIstirahat.style.display = 'none';
-}
-
-function batalPilihJenis() {
-    document.getElementById('formAbsenContainer').style.display = 'none';
-    document.getElementById('jenisAbsenContainer').style.display = 'flex';
-    jenisAbsenDipilih = '';
-    
-    hentikanKamera();
-    updateTombolStatus();
-}
-
-function submitAbsen(event) {
-    event.preventDefault();
-    
-    const nama = document.getElementById('nama').value.trim();
-    const waktu = document.getElementById('waktu').value;
-    const tanggal = document.getElementById('tanggal').value;
-    const jenis = document.getElementById('jenisAbsen').value;
-    const fotoData = document.getElementById('fotoData').value;
-    const latitude = document.getElementById('latitude').value;
-    const longitude = document.getElementById('longitude').value;
-    const jenisKaryawan = document.querySelector('input[name="jenisKaryawan"]:checked').value;
-    
-    if (!nama) {
-        alert('Nama harus diisi!');
-        return;
-    }
-    
-    if (!fotoData) {
-        alert('Foto harus diambil!');
-        return;
-    }
-    
-    if (!latitude || !longitude) {
-        alert('Lokasi tidak terdeteksi!');
-        return;
-    }
-    
-    let tempat = '';
-    if (jenisKaryawan === 'kantor') {
-        tempat = document.getElementById('tempatKantor').value.trim();
-        if (!tempat) {
-            alert('Tempat (Rubrik) harus diisi!');
-            return;
-        }
-    } else {
-        tempat = document.getElementById('tempatLapangan').value.trim();
-        if (!tempat) {
-            alert('Nama proyek harus diisi!');
-            return;
-        }
-    }
-    
-    const status = cekStatusAbsenHariIni();
-    
-    if (jenis === 'Jam Masuk' && status.jamMasuk) {
-        alert('Anda sudah melakukan absen Jam Masuk hari ini!');
-        return;
-    }
-    if (jenis === 'Jam Istirahat' && status.jamIstirahat) {
-        alert('Anda sudah melakukan absen Jam Istirahat hari ini!');
-        return;
-    }
-    if (jenis === 'Jam Pulang' && status.jamPulang) {
-        alert('Anda sudah melakukan absen Jam Pulang hari ini!');
-        return;
-    }
-    
-    if (jenis === 'Jam Istirahat' && !cekDalamRentangIstirahat(waktu)) {
-        alert(`Maaf, absen jam istirahat hanya bisa dilakukan pada pukul ${JAM_ISTIRAHAT_MULAI} - ${JAM_ISTIRAHAT_SELESAI} WIB`);
-        return;
-    }
-    
-    localStorage.setItem('namaUser', nama);
-    
-    const absensiBaru = {
+    const data = {
         id: Date.now(),
         nama: nama,
-        tanggal: tanggal,
-        waktu: waktu,
-        jenis: jenis,
-        jenisKaryawan: jenisKaryawan,
-        tempat: tempat,
-        foto: fotoData,
-        latitude: latitude,
-        longitude: longitude,
-        alamat: lokasiUser.alamat || '',
+        divisi: divisi,
+        tanggal: document.getElementById('tanggal').value,
+        waktu: document.getElementById('waktu').value,
+        jenis: document.getElementById('jenisAbsen').value,
+        status: document.getElementById('statusKehadiran').value,
+        keterangan: document.getElementById('keterangan').value,
+        lokasiTempat: document.getElementById('lokasiTempat').value.trim(),
+        latitude: document.getElementById('latitude').value,
+        longitude: document.getElementById('longitude').value,
+        alamat: document.getElementById('alamatLengkap').innerText || 'Alamat tidak diketahui',
+        fotoData: document.getElementById('fotoData').value,
         timestamp: new Date().toISOString()
     };
     
-    dataAbsensi.push(absensiBaru);
+    const btn = document.querySelector('button[onclick="submitAbsen()"]');
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Menyimpan...';
+    btn.disabled = true;
+    
+    simpanKeDatabase(data)
+        .then(result => {
+            if (result && result.status === 'success') {
+                simpanDataLocal(data);
+                resetFormAbsen();
+                isFormActive = false;
+                kameraDiaktifkan = false;
+                stopWatchPosition();
+                updateStatusAbsen();
+                alert('Absensi berhasil!');
+            } else {
+                throw new Error(result?.message || 'Gagal');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            simpanDataLocal(data);
+            resetFormAbsen();
+            isFormActive = false;
+            kameraDiaktifkan = false;
+            stopWatchPosition();
+            updateStatusAbsen();
+            alert('Data disimpan lokal (server offline)');
+        })
+        .finally(() => {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        });
+}
+
+// ===== DATABASE =====
+async function simpanKeDatabase(data) {
+    try {
+        const response = await fetch('api/absen.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        return await response.json();
+    } catch (error) {
+        console.error('Koneksi database gagal:', error);
+        return null;
+    }
+}
+
+async function ambilDariDatabase(tanggal = '', divisi = '', status = '', nama = '') {
+    try {
+        let url = 'api/laporan.php';
+        const params = [];
+        if (tanggal) params.push(`tanggal=${tanggal}`);
+        if (divisi) params.push(`divisi=${divisi}`);
+        if (status) params.push(`status=${status}`);
+        if (nama) params.push(`nama=${encodeURIComponent(nama)}`);
+        if (params.length) url += '?' + params.join('&');
+        
+        const response = await fetch(url);
+        const result = await response.json();
+        return result.status === 'success' ? result.data : [];
+    } catch (error) {
+        console.error('Gagal ambil data:', error);
+        return [];
+    }
+}
+
+async function hapusDataDatabase(id) {
+    try {
+        const response = await fetch(`api/hapus.php?id=${id}`, {
+            method: 'DELETE'
+        });
+        return await response.json();
+    } catch (error) {
+        console.error('Gagal hapus data:', error);
+        return null;
+    }
+}
+
+// ===== LOCAL STORAGE =====
+function simpanDataLocal(data) {
+    dataAbsensi.push(data);
     localStorage.setItem('dataAbsensi', JSON.stringify(dataAbsensi));
-    
-    alert(`Absensi ${jenis} berhasil!\nNama: ${nama}\nTanggal: ${tanggal}\nWaktu: ${waktu}`);
-    
-    hentikanKamera();
-    updateStatusDisplay();
-    
-    const statusBaru = cekStatusAbsenHariIni();
-    if (statusBaru.jamMasuk && statusBaru.jamIstirahat && statusBaru.jamPulang) {
-        document.getElementById('formAbsenContainer').style.display = 'none';
-        document.getElementById('pesanSelesai').style.display = 'block';
-    } else {
-        batalPilihJenis();
+}
+
+function loadDataFromStorage() {
+    const stored = localStorage.getItem('dataAbsensi');
+    if (stored) {
+        try {
+            dataAbsensi = JSON.parse(stored);
+        } catch (e) {
+            dataAbsensi = [];
+        }
     }
 }
 
-// ==================== FUNGSI LAPORAN ====================
-
-function handleLaporan() {
-    const filterTanggal = document.getElementById('filterTanggal');
-    if (filterTanggal) {
-        filterTanggal.value = getTanggalHariIni();
-    }
-    
-    tampilkanLaporan();
-    showModal('laporanModal');
+function hapusDataLocal(id) {
+    dataAbsensi = dataAbsensi.filter(item => item.id != id);
+    localStorage.setItem('dataAbsensi', JSON.stringify(dataAbsensi));
 }
 
-function filterLaporan() {
-    tampilkanLaporan();
-}
-
-function resetFilter() {
-    document.getElementById('filterTanggal').value = '';
-    tampilkanLaporan();
-}
-
-function refreshLaporan() {
-    tampilkanLaporan();
-}
-
-function tampilkanLaporan() {
-    const tbody = document.getElementById('laporanBody');
-    const filterTanggal = document.getElementById('filterTanggal')?.value || '';
-    
+// ===== REKAP SEMUA KARYAWAN =====
+async function refreshRekap() {
+    const tbody = document.getElementById('rekapBody');
     if (!tbody) return;
     
-    let dataTampil = dataAbsensi;
-    if (filterTanggal) {
-        dataTampil = dataAbsensi.filter(item => item.tanggal === filterTanggal);
+    const filterTanggal = document.getElementById('filterTanggal').value;
+    const filterDivisi = document.getElementById('filterDivisi').value;
+    const filterStatus = document.getElementById('filterStatus').value;
+    const filterNama = document.getElementById('filterNama').value;
+    
+    tbody.innerHTML = `<tr><td colspan="12" class="text-center py-4">
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+        <p class="mt-2">Mengambil data...</p>
+    </td></tr>`;
+    
+    try {
+        const dataDB = await ambilDariDatabase(filterTanggal, filterDivisi, filterStatus, filterNama);
+        
+        if (dataDB && dataDB.length > 0) {
+            tampilkanRekap(dataDB, tbody);
+            updateRekapInfo(dataDB);
+        } else {
+            tampilkanRekapLocal(tbody, filterTanggal, filterDivisi, filterStatus, filterNama);
+        }
+    } catch (error) {
+        tampilkanRekapLocal(tbody, filterTanggal, filterDivisi, filterStatus, filterNama);
     }
-    
-    dataTampil.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-    
-    if (dataTampil.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="11" class="text-center py-4">Belum ada data absensi</td></tr>`;
+}
+
+function tampilkanRekap(data, tbody) {
+    if (!data.length) {
+        tbody.innerHTML = `<tr><td colspan="12" class="text-center py-4">Belum ada data</td></tr>`;
+        updateRekapInfo([]);
         return;
     }
     
-    const laporanGroup = {};
-    
-    dataTampil.forEach(item => {
-        const key = `${item.nama}_${item.tanggal}`;
-        if (!laporanGroup[key]) {
-            laporanGroup[key] = {
-                nama: item.nama,
-                tanggal: item.tanggal,
-                jamMasuk: '-',
-                jamIstirahat: '-',
-                jamPulang: '-',
-                jenisKaryawan: item.jenisKaryawan,
-                tempat: item.tempat,
-                lokasi: item.alamat || `${item.latitude}, ${item.longitude}`,
-                foto: item.foto,
-                id: item.id,
-                status: 'Belum Lengkap'
-            };
-        }
-        
-        if (item.jenis === 'Jam Masuk') {
-            laporanGroup[key].jamMasuk = item.waktu;
-        } else if (item.jenis === 'Jam Istirahat') {
-            laporanGroup[key].jamIstirahat = item.waktu;
-        } else if (item.jenis === 'Jam Pulang') {
-            laporanGroup[key].jamPulang = item.waktu;
-        }
-    });
-    
-    Object.keys(laporanGroup).forEach(key => {
-        const data = laporanGroup[key];
-        if (data.jamMasuk !== '-' && data.jamIstirahat !== '-' && data.jamPulang !== '-') {
-            data.status = 'Lengkap';
-        }
-    });
-    
-    let no = 1;
     let html = '';
-    
-    Object.keys(laporanGroup).forEach(key => {
-        const item = laporanGroup[key];
-        const statusClass = item.status === 'Lengkap' ? 'status-lengkap' : 'status-belum';
+    data.forEach((item, index) => {
+        const badgeStatus = `<span class="badge-status ${item.status || 'hadir'}">${(item.status || 'hadir').toUpperCase()}</span>`;
+        const fotoThumb = item.foto ? 
+            `<img src="${item.foto}" class="foto-thumbnail" onclick="previewFoto('${item.foto}')" title="Klik untuk perbesar">` : 
+            '<span class="text-muted">-</span>';
+        const lokasiGps = item.alamat ? item.alamat.substring(0, 40) + '...' : '-';
         
         html += `
             <tr>
-                <td>${no++}</td>
-                <td>${item.nama}</td>
+                <td>${index + 1}</td>
+                <td><strong>${item.nama}</strong></td>
+                <td>${item.divisi || '-'}</td>
                 <td>${item.tanggal}</td>
-                <td><span class="badge bg-primary">${item.jamMasuk}</span></td>
-                <td><span class="badge bg-warning text-dark">${item.jamIstirahat}</span></td>
-                <td><span class="badge bg-success">${item.jamPulang}</span></td>
-                <td>${item.jenisKaryawan === 'kantor' ? '🏢 Kantor' : '🏗️ Lapangan'}</td>
-                <td>${item.tempat}</td>
-                <td style="max-width: 200px; font-size: 0.9rem;">${item.lokasi}</td>
-                <td><span class="status-badge-table ${statusClass}">${item.status}</span></td>
+                <td>${item.jamMasuk || '-'}</td>
+                <td>${item.jamPulang || '-'}</td>
+                <td>${badgeStatus}</td>
+                <td>${item.keterangan || '-'}</td>
+                <td>${item.lokasiTempat || '-'}</td>
+                <td>${lokasiGps}</td>
+                <td>${fotoThumb}</td>
                 <td>
-                    <img src="${item.foto}" alt="Foto" class="foto-thumbnail" onclick="lihatFotoLaporan('${item.id}')">
+                    <button class="btn-aksi hapus" onclick="konfirmasiHapus(${item.id})" title="Hapus">
+                        <i class="bi bi-trash"></i>
+                    </button>
                 </td>
             </tr>
         `;
     });
     
     tbody.innerHTML = html;
+    updateRekapInfo(data);
 }
 
-function lihatFotoLaporan(id) {
-    const data = dataAbsensi.find(item => item.id == id);
-    if (data && data.foto) {
-        const fotoModal = document.getElementById('fotoModal');
-        const fotoPreviewModal = document.getElementById('fotoPreviewModal');
-        
-        if (fotoModal && fotoPreviewModal) {
-            fotoPreviewModal.src = data.foto;
-            showModal('fotoModal');
-        }
-    }
-}
-
-// ==================== FUNGSI RESET ====================
-
-function resetDataHariIni() {
-    const konfirmasi = confirm("⚠️ Reset data hari ini?\n\nData absensi untuk hari ini akan dihapus. Data hari lain tetap aman.\n\nLanjutkan?");
+function tampilkanRekapLocal(tbody, filterTanggal, filterDivisi, filterStatus, filterNama) {
+    let data = [...dataAbsensi];
     
-    if (konfirmasi) {
-        const tanggalHariIni = getTanggalHariIni();
-        
-        dataAbsensi = dataAbsensi.filter(item => item.tanggal !== tanggalHariIni);
-        localStorage.setItem('dataAbsensi', JSON.stringify(dataAbsensi));
-        
-        absenHariIni = {
-            jamMasuk: null,
-            jamIstirahat: null,
-            jamPulang: null,
-            nama: localStorage.getItem('namaUser') || ''
-        };
-        
-        updateStatusDisplay();
-        tampilkanLaporan();
-        
-        alert('✅ Data hari ini berhasil direset!');
-    }
-}
-
-function resetSemuaData() {
-    const konfirmasi = confirm("⚠️ PERINGATAN!\n\nAnda akan menghapus SEMUA data absensi yang tersimpan.\nTindakan ini tidak dapat dibatalkan.\n\nYakin ingin melanjutkan?");
-    
-    if (konfirmasi) {
-        const konfirmasiUlang = prompt("Ketik 'RESET' untuk mengkonfirmasi penghapusan semua data:");
-        
-        if (konfirmasiUlang === 'RESET') {
-            dataAbsensi = [];
-            localStorage.setItem('dataAbsensi', JSON.stringify(dataAbsensi));
-            
-            absenHariIni = {
-                jamMasuk: null,
-                jamIstirahat: null,
-                jamPulang: null,
-                nama: ''
-            };
-            
-            localStorage.removeItem('namaUser');
-            
-            updateStatusDisplay();
-            tampilkanLaporan();
-            
-            alert('✅ Semua data berhasil direset!');
-        } else {
-            alert('❌ Reset dibatalkan (konfirmasi salah)');
-        }
-    }
-}
-
-function resetStatusUjiCoba() {
-    const konfirmasi = confirm("🧪 Mode Uji Coba\n\nIni akan:\n1. Reset semua data hari ini\n2. Mengisi contoh data absensi\n\nLanjutkan?");
-    
-    if (konfirmasi) {
-        const tanggalHariIni = getTanggalHariIni();
-        
-        dataAbsensi = dataAbsensi.filter(item => item.tanggal !== tanggalHariIni);
-        
-        const namaContoh = "User Uji Coba";
-        const waktuSekarang = new Date();
-        const jamMasuk = "08:00";
-        const jamIstirahat = "12:30";
-        
-        // Contoh foto dummy (data URL kecil untuk contoh)
-        const fotoDummy = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23667eea'/%3E%3Ctext x='50' y='55' font-size='40' text-anchor='middle' fill='white' font-family='Arial'%3E📸%3C/text%3E%3C/svg%3E";
-        
-        const dataContoh = [
-            {
-                id: Date.now() - 30000,
-                nama: namaContoh,
-                tanggal: tanggalHariIni,
-                waktu: jamMasuk,
-                jenis: "Jam Masuk",
-                jenisKaryawan: "kantor",
-                tempat: "Rubrik Uji Coba",
-                foto: fotoDummy,
-                latitude: "-6.2088",
-                longitude: "106.8456",
-                alamat: "Jakarta, Indonesia",
-                timestamp: new Date(Date.now() - 30000).toISOString()
-            },
-            {
-                id: Date.now() - 20000,
-                nama: namaContoh,
-                tanggal: tanggalHariIni,
-                waktu: jamIstirahat,
-                jenis: "Jam Istirahat",
-                jenisKaryawan: "kantor",
-                tempat: "Rubrik Uji Coba",
-                foto: fotoDummy,
-                latitude: "-6.2088",
-                longitude: "106.8456",
-                alamat: "Jakarta, Indonesia",
-                timestamp: new Date(Date.now() - 20000).toISOString()
-            }
-        ];
-        
-        dataAbsensi = [...dataAbsensi, ...dataContoh];
-        localStorage.setItem('dataAbsensi', JSON.stringify(dataAbsensi));
-        localStorage.setItem('namaUser', namaContoh);
-        
-        updateStatusDisplay();
-        tampilkanLaporan();
-        
-        alert('✅ Mode uji coba aktif!\nData contoh telah ditambahkan. Silakan lanjutkan absen jam pulang.');
-    }
-}
-
-// ==================== FUNGSI EKSPOR ====================
-
-function eksporCSV() {
-    if (dataAbsensi.length === 0) {
-        alert('Tidak ada data untuk diekspor!');
-        return;
-    }
-    
-    let csv = 'No,Nama,Tanggal,Jam Masuk,Jam Istirahat,Jam Pulang,Jenis Karyawan,Tempat,Lokasi,Status\n';
-    
-    const laporanGroup = {};
-    dataAbsensi.forEach(item => {
-        const key = `${item.nama}_${item.tanggal}`;
-        if (!laporanGroup[key]) {
-            laporanGroup[key] = {
-                nama: item.nama,
-                tanggal: item.tanggal,
-                jamMasuk: '-',
-                jamIstirahat: '-',
-                jamPulang: '-',
-                jenisKaryawan: item.jenisKaryawan === 'kantor' ? 'Kantor' : 'Lapangan',
-                tempat: item.tempat,
-                lokasi: item.alamat || `${item.latitude}, ${item.longitude}`
-            };
-        }
-        
-        if (item.jenis === 'Jam Masuk') laporanGroup[key].jamMasuk = item.waktu;
-        if (item.jenis === 'Jam Istirahat') laporanGroup[key].jamIstirahat = item.waktu;
-        if (item.jenis === 'Jam Pulang') laporanGroup[key].jamPulang = item.waktu;
-    });
-    
-    let no = 1;
-    Object.keys(laporanGroup).forEach(key => {
-        const item = laporanGroup[key];
-        const status = (item.jamMasuk !== '-' && item.jamIstirahat !== '-' && item.jamPulang !== '-') ? 'Lengkap' : 'Belum Lengkap';
-        
-        csv += `"${no++}","${item.nama}","${item.tanggal}","${item.jamMasuk}","${item.jamIstirahat}","${item.jamPulang}","${item.jenisKaryawan}","${item.tempat}","${item.lokasi}","${status}"\n`;
-    });
-    
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `absensi_${getTanggalHariIni()}.csv`;
-    a.click();
-    window.URL.revokeObjectURL(url);
-}
-
-function eksporJSON() {
-    if (dataAbsensi.length === 0) {
-        alert('Tidak ada data untuk diekspor!');
-        return;
-    }
-    
-    const dataStr = JSON.stringify(dataAbsensi, null, 2);
-    const blob = new Blob([dataStr], { type: 'application/json' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `absensi_${getTanggalHariIni()}.json`;
-    a.click();
-    window.URL.revokeObjectURL(url);
-}
-
-function cetakLaporan() {
-    const filterTanggal = document.getElementById('filterTanggal')?.value || '';
-    const judul = filterTanggal ? `Laporan Absensi Tanggal ${filterTanggal}` : 'Laporan Semua Absensi';
-    
-    const cetakWindow = window.open('', '_blank');
-    
-    let dataCetak = dataAbsensi;
     if (filterTanggal) {
-        dataCetak = dataAbsensi.filter(item => item.tanggal === filterTanggal);
+        data = data.filter(item => item.tanggal === filterTanggal);
     }
     
-    const laporanGroup = {};
-    dataCetak.forEach(item => {
-        const key = `${item.nama}_${item.tanggal}`;
-        if (!laporanGroup[key]) {
-            laporanGroup[key] = {
+    if (filterDivisi) {
+        data = data.filter(item => item.divisi === filterDivisi);
+    }
+    
+    if (filterStatus) {
+        data = data.filter(item => item.status === filterStatus);
+    }
+    
+    if (filterNama) {
+        data = data.filter(item => item.nama.toLowerCase().includes(filterNama.toLowerCase()));
+    }
+    
+    const grouped = {};
+    data.forEach(item => {
+        const key = `${item.tanggal}-${item.nama}`;
+        if (!grouped[key]) {
+            grouped[key] = {
+                id: item.id,
                 nama: item.nama,
+                divisi: item.divisi,
                 tanggal: item.tanggal,
                 jamMasuk: '-',
-                jamIstirahat: '-',
                 jamPulang: '-',
-                jenisKaryawan: item.jenisKaryawan === 'kantor' ? 'Kantor' : 'Lapangan',
-                tempat: item.tempat,
-                lokasi: item.alamat || `${item.latitude}, ${item.longitude}`
+                status: item.status || 'hadir',
+                keterangan: item.keterangan || '',
+                lokasiTempat: item.lokasiTempat,
+                alamat: item.alamat,
+                foto: null
             };
         }
-        
-        if (item.jenis === 'Jam Masuk') laporanGroup[key].jamMasuk = item.waktu;
-        if (item.jenis === 'Jam Istirahat') laporanGroup[key].jamIstirahat = item.waktu;
-        if (item.jenis === 'Jam Pulang') laporanGroup[key].jamPulang = item.waktu;
+        if (item.jenis === 'masuk') {
+            grouped[key].jamMasuk = item.waktu;
+            grouped[key].foto = item.fotoData;
+        } else {
+            grouped[key].jamPulang = item.waktu;
+        }
     });
     
-    let html = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>${judul}</title>
-            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-            <style>
-                body { padding: 20px; }
-                @media print {
-                    .no-print { display: none; }
-                }
-            </style>
-        </head>
-        <body>
-            <h1 class="text-center mb-4">${judul}</h1>
-            <p class="text-muted">Dicetak pada: ${new Date().toLocaleString('id-ID')}</p>
-            <table class="table table-bordered">
-                <thead class="table-primary">
-                    <tr>
-                        <th>No</th>
-                        <th>Nama</th>
-                        <th>Tanggal</th>
-                        <th>Jam Masuk</th>
-                        <th>Jam Istirahat</th>
-                        <th>Jam Pulang</th>
-                        <th>Jenis</th>
-                        <th>Tempat</th>
-                        <th>Lokasi</th>
-                    </tr>
-                </thead>
-                <tbody>
-    `;
+    const dataArray = Object.values(grouped);
     
-    let no = 1;
-    Object.keys(laporanGroup).forEach(key => {
-        const item = laporanGroup[key];
+    if (!dataArray.length) {
+        tbody.innerHTML = `<tr><td colspan="12" class="text-center py-4">Belum ada data lokal</td></tr>`;
+        updateRekapInfo([]);
+        return;
+    }
+    
+    let html = '';
+    dataArray.forEach((item, index) => {
+        const badgeStatus = `<span class="badge-status ${item.status}">${item.status.toUpperCase()}</span>`;
+        const fotoThumb = item.foto ? 
+            `<img src="${item.foto}" class="foto-thumbnail" onclick="previewFoto('${item.foto}')" title="Klik untuk perbesar (Lokal)">` : 
+            '<span class="text-muted">-</span>';
+        const lokasiGps = item.alamat ? item.alamat.substring(0, 40) + '...' : '-';
+        
         html += `
             <tr>
-                <td>${no++}</td>
-                <td>${item.nama}</td>
+                <td>${index + 1}</td>
+                <td><strong>${item.nama}</strong></td>
+                <td>${item.divisi || '-'}</td>
                 <td>${item.tanggal}</td>
                 <td>${item.jamMasuk}</td>
-                <td>${item.jamIstirahat}</td>
                 <td>${item.jamPulang}</td>
-                <td>${item.jenisKaryawan}</td>
-                <td>${item.tempat}</td>
-                <td>${item.lokasi}</td>
+                <td>${badgeStatus}</td>
+                <td>${item.keterangan || '-'}</td>
+                <td>${item.lokasiTempat || '-'}</td>
+                <td>${lokasiGps}</td>
+                <td>${fotoThumb}</td>
+                <td>
+                    <button class="btn-aksi hapus" onclick="konfirmasiHapus(${item.id})" title="Hapus">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </td>
             </tr>
         `;
     });
     
-    html += `
-                </tbody>
-            </table>
-            <div class="text-center mt-4 no-print">
-                <button onclick="window.print()" class="btn btn-primary">Cetak</button>
-                <button onclick="window.close()" class="btn btn-secondary">Tutup</button>
-            </div>
-        </body>
-        </html>
-    `;
-    
-    cetakWindow.document.write(html);
-    cetakWindow.document.close();
+    tbody.innerHTML = html + `<tr><td colspan="12" class="text-center text-muted small py-2"><i class="bi bi-info-circle"></i> *Data lokal (offline) - Tidak tersinkronisasi dengan server</td></tr>`;
+    updateRekapInfo(dataArray);
 }
 
-// ==================== INISIALISASI ====================
+function updateRekapInfo(data) {
+    document.getElementById('totalData').innerHTML = data.length;
+    
+    const hadir = data.filter(item => (item.status || 'hadir') === 'hadir').length;
+    const izin = data.filter(item => item.status === 'izin').length;
+    const sakit = data.filter(item => item.status === 'sakit').length;
+    const alpha = data.filter(item => item.status === 'alpha').length;
+    
+    const uniqueKaryawan = new Set(data.map(item => item.nama)).size;
+    
+    document.getElementById('totalHadir').innerHTML = hadir;
+    document.getElementById('totalIzin').innerHTML = izin;
+    document.getElementById('totalSakit').innerHTML = sakit;
+    document.getElementById('totalAlpha').innerHTML = alpha;
+    document.getElementById('totalKaryawan').innerHTML = uniqueKaryawan;
+}
 
-document.addEventListener('DOMContentLoaded', function() {
-    dataAbsensi = JSON.parse(localStorage.getItem('dataAbsensi')) || [];
+function filterRekap() {
+    refreshRekap();
+}
+
+function resetFilter() {
+    document.getElementById('filterTanggal').value = '';
+    document.getElementById('filterDivisi').value = '';
+    document.getElementById('filterStatus').value = '';
+    document.getElementById('filterNama').value = '';
+    refreshRekap();
+}
+
+function previewFoto(fotoData) {
+    document.getElementById('fotoPreviewModal').src = fotoData;
+    new bootstrap.Modal(document.getElementById('fotoModal')).show();
+}
+
+// ===== HAPUS DATA =====
+function konfirmasiHapus(id) {
+    hapusId = id;
+    const modal = new bootstrap.Modal(document.getElementById('hapusModal'));
+    modal.show();
     
-    const radioKantor = document.getElementById('kantor');
-    if (radioKantor) {
-        radioKantor.checked = true;
-    }
-    
-    const tempatKantor = document.getElementById('tempatKantor');
-    if (tempatKantor) {
-        tempatKantor.value = 'Rubrik';
-    }
-    
-    updateStatusDisplay();
-    
-    // Inisialisasi Bootstrap modals
-    const modals = document.querySelectorAll('.modal');
-    modals.forEach(modal => {
-        new bootstrap.Modal(modal, {
-            backdrop: 'static'
-        });
+    document.getElementById('confirmHapus').onclick = function() {
+        hapusData(id);
+        modal.hide();
+    };
+}
+
+function hapusData(id) {
+    hapusDataDatabase(id).then(result => {
+        if (result && result.status === 'success') {
+            console.log('Data terhapus dari database');
+        }
+    }).catch(error => {
+        console.error('Gagal hapus dari database:', error);
     });
     
-    console.log('🔧 Developer tools:');
-    console.log('  - resetDataHariIni()   : Reset data hari ini');
-    console.log('  - resetSemuaData()     : Reset semua data');
-    console.log('  - resetStatusUjiCoba() : Mode uji coba');
-});
+    hapusDataLocal(id);
+    refreshRekap();
+    alert('Data berhasil dihapus');
+}
 
-// Export fungsi ke global
-window.handleAbsen = handleAbsen;
-window.handleLaporan = handleLaporan;
-window.pilihJamMasuk = pilihJamMasuk;
-window.pilihJamIstirahat = pilihJamIstirahat;
-window.pilihJamPulang = pilihJamPulang;
-window.batalPilihJenis = batalPilihJenis;
-window.submitAbsen = submitAbsen;
-window.closeModal = closeModal;
-window.ambilFoto = ambilFoto;
-window.ulangFoto = ulangFoto;
-window.ubahJenisKaryawan = ubahJenisKaryawan;
-window.filterLaporan = filterLaporan;
-window.resetFilter = resetFilter;
-window.refreshLaporan = refreshLaporan;
-window.eksporCSV = eksporCSV;
-window.eksporJSON = eksporJSON;
-window.cetakLaporan = cetakLaporan;
-window.lihatFotoLaporan = lihatFotoLaporan;
-window.resetDataHariIni = resetDataHariIni;
-window.resetSemuaData = resetSemuaData;
-window.resetStatusUjiCoba = resetStatusUjiCoba;
+// ===== EXPORT PDF =====
+function exportPDF() {
+    const element = document.querySelector('.table-container');
+    const opt = {
+        margin: [0.5, 0.5, 0.5, 0.5],
+        filename: `rekap_absensi_${new Date().toISOString().split('T')[0]}.pdf`,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, letterRendering: true },
+        jsPDF: { unit: 'in', format: 'a4', orientation: 'landscape' }
+    };
+    
+    html2pdf().set(opt).from(element).save();
+}
+
+// ===== EXPORT CSV =====
+function exportCSV() {
+    if (!dataAbsensi.length) {
+        alert('Tidak ada data');
+        return;
+    }
+    
+    let csv = 'No,Nama,Divisi,Tanggal,Jenis,Waktu,Status,Keterangan,Lokasi Tempat,Alamat\n';
+    dataAbsensi.forEach((item, i) => {
+        csv += `${i+1},${item.nama},${item.divisi || '-'},${item.tanggal},${item.jenis},${item.waktu},${item.status || 'hadir'},${item.keterangan || ''},${item.lokasiTempat || ''},${item.alamat}\n`;
+    });
+    
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `rekap_absensi_${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+}
+
+// ===== CETAK =====
+function cetakRekap() {
+    window.print();
+}
+
+// ===== RESET (UNTUK TESTING) =====
+function resetDataHariIni() {
+    if (!confirm('Reset data hari ini?')) return;
+    const today = new Date().toISOString().split('T')[0];
+    dataAbsensi = dataAbsensi.filter(item => item.tanggal !== today);
+    localStorage.setItem('dataAbsensi', JSON.stringify(dataAbsensi));
+    refreshRekap();
+    alert('Data hari ini telah direset');
+}
+
+function resetSemuaData() {
+    if (!confirm('Hapus semua data? Ketik RESET untuk konfirmasi')) return;
+    const confirmText = prompt('Ketik RESET untuk konfirmasi:');
+    if (confirmText === 'RESET') {
+        dataAbsensi = [];
+        localStorage.removeItem('dataAbsensi');
+        refreshRekap();
+        alert('Semua data telah dihapus');
+    }
+}
