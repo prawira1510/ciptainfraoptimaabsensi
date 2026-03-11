@@ -2,14 +2,14 @@
 // api/config/database.php
 header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE');
+header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type');
 
 class Database {
     private $host = "localhost";
-    private $db_name = "db_absensi_cio";
-    private $username = "root";      // Ganti dengan username MySQL Anda (default XAMPP: root)
-    private $password = "";          // Ganti dengan password MySQL Anda (default XAMPP: kosong)
+    private $db_name = "absensikaryawancio"; // Sesuaikan dengan nama database Anda
+    private $username = "root";  // Sesuaikan dengan username MySQL Anda
+    private $password = "";       // Sesuaikan dengan password MySQL Anda
     private $conn;
 
     public function getConnection() {
@@ -26,17 +26,9 @@ class Database {
             return $this->conn;
             
         } catch(PDOException $e) {
-            http_response_code(500);
-            echo json_encode([
-                'status' => 'error',
-                'message' => 'Koneksi database gagal: ' . $e->getMessage()
-            ]);
-            exit;
+            error_log("Database connection error: " . $e->getMessage());
+            throw $e;
         }
     }
 }
-
-// Buat instance database untuk digunakan di file lain
-$database = new Database();
-$db = $database->getConnection();
 ?>

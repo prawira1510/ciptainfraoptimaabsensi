@@ -1,65 +1,65 @@
 <?php
 // api/laporan.php
-header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
+require_once 'config.php';
 
-// Handle preflight request
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit();
-}
-
-require_once 'config/database.php';
-
-// Ambil parameter
+// Ambil parameter filter
 $tanggal = isset($_GET['tanggal']) ? $_GET['tanggal'] : null;
-$bulan = isset($_GET['bulan']) ? $_GET['bulan'] : null;
-$id_karyawan = isset($_GET['id_karyawan']) ? $_GET['id_karyawan'] : null;
+$divisi = isset($_GET['divisi']) ? $_GET['divisi'] : null;
+$status = isset($_GET['status']) ? $_GET['status'] : null;
+$nama = isset($_GET['nama']) ? $_GET['nama'] : null;
 
 try {
+    // Query untuk mengambil SEMUA DATA absensi dengan JOIN ke tabel karyawan
     $query = "SELECT 
+                a.id_absensi,
                 k.id_karyawan,
                 k.nama_lengkap as nama,
-                k.nip,
-                k.jenis_karyawan,
+                k.divisi,
                 a.tanggal,
                 a.jam_masuk,
                 a.jam_pulang,
                 a.foto_masuk,
                 a.foto_pulang,
+                a.status_kehadiran as status,
+                a.keterangan,
+                a.lokasi_tempat,
                 a.alamat_masuk,
                 a.alamat_pulang,
-                a.tempat_absensi as tempat,
                 a.latitude_masuk,
-                a.longitude_masuk,
-                a.created_at
+                a.longitude_masuk
               FROM tbl_absensi a
-              JOIN tbl_karyawan k ON a.id_karyawan = k.id_karyawan
+              INNER JOIN tbl_karyawan k ON a.id_karyawan = k.id_karyawan
               WHERE 1=1";
     
     $params = [];
     
+    // Tambahkan filter jika ada
     if ($tanggal) {
         $query .= " AND a.tanggal = :tanggal";
         $params[':tanggal'] = $tanggal;
     }
     
-    if ($bulan) {
-        $query .= " AND DATE_FORMAT(a.tanggal, '%Y-%m') = :bulan";
-        $params[':bulan'] = $bulan;
+    if ($divisi) {
+        $query .= " AND k.divisi = :divisi";
+        $params[':divisi'] = $divisi;
     }
     
-    if ($id_karyawan) {
-        $query .= " AND a.id_karyawan = :id_karyawan";
-        $params[':id_karyawan'] = $id_karyawan;
+    if ($status) {
+        $query .= " AND a.status_kehadiran = :status";
+        $params[':status'] = $status;
     }
     
-    $query .= " ORDER BY a.tanggal DESC, a.jam_masuk DESC";
+    if ($nama) {
+        $query .= " AND k.nama_lengkap LIKE :nama";
+        $params[':nama'] = "%$nama%";
+    }
+    
+    // Urutkan dari terbaru
+    $query .= " ORDER BY a.tanggal DESC, a.created_at DESC";
     
     $stmt = $db->prepare($query);
     
+    // Bind parameters
     foreach ($params as $key => $value) {
         $stmt->bindValue($key, $value);
     }
@@ -70,42 +70,44 @@ try {
     
     // Format data untuk frontend
     $result = [];
+    $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP_HOST'];
+    $base_url .= str_replace('api/laporan.php', '', $_SERVER['SCRIPT_NAME']);
+    
     foreach ($data as $row) {
-        // Tentukan alamat yang akan ditampilkan
+        // Gabungkan alamat
         $alamat = $row['alamat_masuk'] ?: $row['alamat_pulang'] ?: '-';
         
-        // Tentukan foto yang akan ditampilkan (prioritas foto masuk)
+        // Tentukan foto yang akan ditampilkan
         $foto = $row['foto_masuk'] ?: $row['foto_pulang'];
-        if ($foto) {
-            // Buat URL lengkap
-            $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP_HOST'];
-            $base_url .= str_replace('api/laporan.php', '', $_SERVER['SCRIPT_NAME']);
-            $foto = $base_url . $foto;
-        }
+        $foto_url = $foto ? $base_url . $foto : null;
         
         $result[] = [
+            'id' => (int)$row['id_absensi'],
             'nama' => $row['nama'],
-            'nip' => $row['nip'] ?: '-',
+            'divisi' => $row['divisi'] ?: '-',
             'tanggal' => $row['tanggal'],
-            'jamMasuk' => $row['jam_masuk'] ?? '-',
-            'jamPulang' => $row['jam_pulang'] ?? '-',
-            'jenisKaryawan' => $row['jenis_karyawan'],
-            'tempat' => $row['tempat'] ?: '-',
+            'jamMasuk' => $row['jam_masuk'] ?: '-',
+            'jamPulang' => $row['jam_pulang'] ?: '-',
+            'status' => $row['status'] ?: 'hadir',
+            'keterangan' => $row['keterangan'] ?: '',
+            'lokasiTempat' => $row['lokasi_tempat'] ?: '-',
             'alamat' => $alamat,
-            'foto' => $foto,
-            'fotoMasuk' => $row['foto_masuk'] ? $base_url . $row['foto_masuk'] : null,
-            'fotoPulang' => $row['foto_pulang'] ? $base_url . $row['foto_pulang'] : null
+            'foto' => $foto_url,
+            'latitude' => $row['latitude_masuk'],
+            'longitude' => $row['longitude_masuk']
         ];
     }
     
+    // Kembalikan SEMUA DATA
     echo json_encode([
         'status' => 'success',
         'data' => $result,
-        'total' => count($result)
+        'total' => count($result),
+        'message' => 'Data berhasil diambil'
     ]);
     
 } catch (Exception $e) {
-    http_response_code(500);
+    error_log("Error in laporan.php: " . $e->getMessage());
     echo json_encode([
         'status' => 'error',
         'message' => 'Error: ' . $e->getMessage()
